@@ -7,52 +7,84 @@
 
 #include <avr/io.h>
 #include <util/delay.h>
+#include <avr/interrupt.h>
 
 #include "constants.h"
 
-void my_delay(double ms) {
-	while (ms--) {
-		_delay_ms(1);
-	}
-}
+volatile uint32_t music_ms = 0;
+void update_track(Track *track, volatile uint8_t *ocr_reg,
+		volatile uint8_t *tccr_reg, uint8_t com_bit);
 
-void play_note(uint8_t note, uint16_t duration) {
-	uint16_t sound_time = duration * 0.9;
-	uint16_t pause_time = duration * 0.1;
-
-	if (note != 0) {
-		OCR0 = note;
-		OCR2 = note;
-		TCCR0 |= (1 << COM00);
-		TCCR2 |= (1 << COM20);
-	}
-	my_delay(sound_time);
-
-	TCCR0 &= ~(1 << COM00);
-	TCCR2 &= ~(1 << COM20);
-	my_delay(pause_time);
+ISR(TIMER1_COMPA_vect) {
+	music_ms++;
 }
 
 int main(void) {
+	DDRB &= ~(1 << PB0);
 	DDRB |= (1 << PB3);
 	DDRD |= (1 << PD7);
+
+	PORTB |= (1 << PB0);
 
 	// enable CTC0
 	TCCR0 |= (1 << WGM01);
 	TCCR0 |= (1 << CS00) | (1 << CS01);
-	TCCR0 |= (1 << COM00);
 
 	// enable CTC2
 	TCCR2 |= (1 << WGM21);
-	TCCR2 |= (1 << CS20) | (1 << CS21);
-	TCCR2 |= (1 << COM20);
+	TCCR2 |= (1 << CS22);
+
+	TCCR1B |= (1 << WGM12);
+	TCCR1B |= (1 << CS11) | (1 << CS10);
+	OCR1A = 124;
+	TIMSK |= (1 << OCIE1A);
+
+	Track melody = { .notes = melody_path, .size = sizeof(melody_path)
+			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0 };
+	Track support = { .notes = support_path, .size = sizeof(support_path)
+			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0 };
+
+	sei();
 
 	while (1) {
-		for (uint8_t i = 0; i < (sizeof(melody_path) / sizeof(Note)); i++) {
-			uint8_t p = pgm_read_byte(&(melody_path[i].pitch));
-			uint16_t d = pgm_read_word(&(melody_path[i].duration));
+		if (!(PINB & (1 << PB0))) {
+			melody.is_playing = 1;
+			support.is_playing = 1;
 
-			play_note(p, d);
+			while (melody.is_playing) {
+				if (melody.is_playing)
+					update_track(&melody, &OCR0, &TCCR0, COM00);
+				if (support.is_playing)
+					update_track(&support, &OCR2, &TCCR2, COM20);
+			}
+		}
+		music_ms = 0;
+	}
+}
+
+void update_track(Track *track, volatile uint8_t *ocr_reg,
+		volatile uint8_t *tccr_reg, uint8_t com_bit) {
+	if (music_ms >= track->next_note_in) {
+		uint8_t current_pitch = pgm_read_byte(
+				&(track->notes[track->current_id_note].pitch));
+		uint16_t current_duration = pgm_read_word(
+				&(track->notes[track->current_id_note].duration));
+
+		if (current_pitch == PAUSE) {
+			*tccr_reg &= ~(1 << com_bit);
+		} else {
+			*ocr_reg = current_pitch;
+			*tccr_reg |= (1 << com_bit);
+		}
+
+		track->next_note_in = music_ms + current_duration;
+		track->current_id_note++;
+
+		if (track->current_id_note > track->size) {
+			track->current_id_note = 0;
+			track->next_note_in = 0;
+			*tccr_reg &= ~(1 << com_bit);
+			track->is_playing = 0;
 		}
 	}
 }
