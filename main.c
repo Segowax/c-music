@@ -32,7 +32,7 @@ int main(void) {
 
 	// enable CTC2
 	TCCR2 |= (1 << WGM21);
-	TCCR2 |= (1 << CS22);
+	TCCR2 |= (1 << CS21) | (1 << CS22);
 
 	TCCR1B |= (1 << WGM12);
 	TCCR1B |= (1 << CS11) | (1 << CS10);
@@ -40,9 +40,11 @@ int main(void) {
 	TIMSK |= (1 << OCIE1A);
 
 	Track melody = { .notes = melody_path, .size = sizeof(melody_path)
-			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0 };
+			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0,
+			.is_playing = 0 };
 	Track support = { .notes = support_path, .size = sizeof(support_path)
-			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0 };
+			/ sizeof(Note), .current_id_note = 0, .next_note_in = 0,
+			.is_playing = 0 };
 
 	sei();
 
@@ -50,21 +52,26 @@ int main(void) {
 		if (!(PINB & (1 << PB0))) {
 			melody.is_playing = 1;
 			support.is_playing = 1;
-
-			while (melody.is_playing) {
-				if (melody.is_playing)
-					update_track(&melody, &OCR0, &TCCR0, COM00);
-				if (support.is_playing)
-					update_track(&support, &OCR2, &TCCR2, COM20);
-			}
 		}
-		music_ms = 0;
+
+		if (melody.is_playing)
+			update_track(&melody, &OCR0, &TCCR0, COM00);
+		if (support.is_playing)
+			update_track(&support, &OCR2, &TCCR2, COM20);
+		if (!support.is_playing && !melody.is_playing)
+			music_ms = 0;
 	}
 }
 
 void update_track(Track *track, volatile uint8_t *ocr_reg,
 		volatile uint8_t *tccr_reg, uint8_t com_bit) {
-	if (music_ms >= track->next_note_in) {
+
+	if (track->current_id_note > track->size) {
+		track->current_id_note = 0;
+		track->next_note_in = 0;
+		track->is_playing = 0;
+		*tccr_reg &= ~(1 << com_bit);
+	} else if (music_ms >= track->next_note_in) {
 		uint8_t current_pitch = pgm_read_byte(
 				&(track->notes[track->current_id_note].pitch));
 		uint16_t current_duration = pgm_read_word(
@@ -79,12 +86,5 @@ void update_track(Track *track, volatile uint8_t *ocr_reg,
 
 		track->next_note_in = music_ms + current_duration;
 		track->current_id_note++;
-
-		if (track->current_id_note > track->size) {
-			track->current_id_note = 0;
-			track->next_note_in = 0;
-			*tccr_reg &= ~(1 << com_bit);
-			track->is_playing = 0;
-		}
 	}
 }
